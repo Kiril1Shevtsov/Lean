@@ -606,11 +606,12 @@ namespace QuantConnect.Statistics
                     var currentFill = position.PendingFills[index];
                     var currentValue = GetProfitPrice(fill.Symbol, currentFill.FillPrice);
                     var absoluteUnexecutedQuantity = fill.AbsoluteFillQuantity - Math.Abs(totalExecutedQuantity);
+                    // This fill contributes to the trade even if it is only partially consumed.
+                    if (_matchingMethod == FillMatchingMethod.LIFO)
+                        entryTime = currentFill.UtcTime;
+
                     if (absoluteUnexecutedQuantity >= Math.Abs(currentFill.FillQuantity))
                     {
-                        if (_matchingMethod == FillMatchingMethod.LIFO)
-                            entryTime = currentFill.UtcTime;
-
                         totalExecutedQuantity -= currentFill.FillQuantity;
                         entryPrice -= (currentFill.FillPrice - entryPrice) * currentFill.FillQuantity / totalExecutedQuantity;
                         entryTotalValue += currentValue * currentFill.FillQuantity;

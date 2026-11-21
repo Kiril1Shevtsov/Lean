@@ -167,6 +167,42 @@ namespace QuantConnect.Tests.Common.Statistics
             }
         }
 
+        [Test]
+        public void FlatToReducedIncludesPartiallyMatchedEntryInTradeDuration(
+            [Values] FillMatchingMethod matchingMethod, [Values(-1, 1)] int direction)
+        {
+            var builder = new TradeBuilder(FillGroupingMethod.FlatToReduced, matchingMethod);
+            decimal[] quantities = [3m, 4m, -5m, -2m];
+            decimal[] prices = [90m, 110m, 120m, 130m];
+            for (var i = 0; i < quantities.Length; i++)
+            {
+                var quantity = direction * quantities[i];
+                builder.ProcessFill(new OrderEvent(i + 1, Symbols.SPY, _startTime.AddMinutes(i), OrderStatus.Filled,
+                    quantity > 0 ? OrderDirection.Buy : OrderDirection.Sell, prices[i], quantity, OrderFee.Zero),
+                    ConversionRate, 0m);
+            }
+
+            Assert.AreEqual(2, builder.ClosedTrades.Count);
+            var first = builder.ClosedTrades[0];
+            var second = builder.ClosedTrades[1];
+            // LIFO closes four newer units and one older unit; FIFO closes three older and two newer units.
+            var lifo = matchingMethod == FillMatchingMethod.LIFO;
+            var firstCost = lifo ? 4m * prices[1] + prices[0] : 3m * prices[0] + 2m * prices[1];
+            var secondCost = 3m * prices[0] + 4m * prices[1] - firstCost;
+            Assert.AreEqual(_startTime, first.EntryTime);
+            Assert.AreEqual(TimeSpan.FromMinutes(2), first.Duration);
+            Assert.AreEqual(lifo ? _startTime : _startTime.AddMinutes(1), second.EntryTime);
+            Assert.AreEqual(TimeSpan.FromMinutes(lifo ? 3 : 2), second.Duration);
+            Assert.AreEqual(5m, first.Quantity);
+            Assert.AreEqual(2m, second.Quantity);
+            Assert.AreEqual(firstCost / first.Quantity, first.EntryPrice);
+            Assert.AreEqual(secondCost / second.Quantity, second.EntryPrice);
+            Assert.AreEqual(direction * (5m * prices[2] - firstCost), first.ProfitLoss);
+            Assert.AreEqual(direction * (2m * prices[3] - secondCost), second.ProfitLoss);
+            Assert.AreEqual(0m, first.TotalFees + second.TotalFees);
+            Assert.IsFalse(builder.HasOpenPosition(Symbols.SPY));
+        }
+
         // entry cost and exit proceeds are equal, but averaging the fills leaves decimal residue
         [TestCase(FillGroupingMethod.FlatToFlat, new[] { 1.0, 2, 1, -4 }, new[] { 3.0, 11, 1, 6.5 })]
         [TestCase(FillGroupingMethod.FlatToReduced, new[] { 1.0, 2, 1, -4 }, new[] { 3.0, 11, 1, 6.5 })]
@@ -2658,7 +2694,9 @@ namespace QuantConnect.Tests.Common.Statistics
                         var trade1 = builder.ClosedTrades[0];
 
                         Assert.AreEqual(Symbols.SPY, trade1.Symbol);
-                        Assert.AreEqual(matchingMethod == FillMatchingMethod.FIFO ? time : time.AddMinutes(10), trade1.EntryTime);
+                        // Both entry fills contribute, even when LIFO consumes only part of the older one.
+                        Assert.AreEqual(time, trade1.EntryTime);
+                        Assert.AreEqual(TimeSpan.FromMinutes(20), trade1.Duration);
                         Assert.Less(
                             Math.Abs(AdjustPriceToSplit(matchingMethod == FillMatchingMethod.FIFO ? 1.0733333333333333333333333333m : 1.0766666666666666666666666667m, split) - trade1.EntryPrice),
                             1e-27m);
@@ -2846,7 +2884,9 @@ namespace QuantConnect.Tests.Common.Statistics
                         var trade1 = builder.ClosedTrades[0];
 
                         Assert.AreEqual(Symbols.SPY, trade1.Symbol);
-                        Assert.AreEqual(matchingMethod == FillMatchingMethod.FIFO ? time : time.AddMinutes(10), trade1.EntryTime);
+                        // Both entry fills contribute, even when LIFO consumes only part of the older one.
+                        Assert.AreEqual(time, trade1.EntryTime);
+                        Assert.AreEqual(TimeSpan.FromMinutes(20), trade1.Duration);
                         Assert.Less(
                             Math.Abs(AdjustPriceToSplit(matchingMethod == FillMatchingMethod.FIFO ? 1.0733333333333333333333333333m : 1.0766666666666666666666666667m, split) - trade1.EntryPrice),
                             1e-27m);
