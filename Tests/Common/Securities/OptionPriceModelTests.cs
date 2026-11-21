@@ -884,6 +884,76 @@ namespace QuantConnect.Tests.Common
             Assert.AreEqual(impliedVolEstimate, ibImpliedVol, 0.001);
         }
 
+        [TestCase(OptionRight.Call, 0.02d, 0.97d, 100.0d, 100.0d, 0.31d, 1.6963822246971313d)]
+        [TestCase(OptionRight.Put, 0.25d, 1.02d, 102.0d, 100.0d, 0.41d, 7.4296432771690186d)]
+        [TestCase(OptionRight.Call, 2.5d, 0.91d, 92.0d, 100.0d, 0.37d, 16.659808436534374d)]
+        [TestCase(OptionRight.Put, 4.0d, 0.87d, 107.0d, 100.0d, 0.23d, 13.508607642207357d)]
+        [TestCase(OptionRight.Put, 0.5d, 0.97d, 100.0d, 100.0d, 0.002d, 0.054726385043600235d)]
+        [TestCase(OptionRight.Call, 1.0d, 0.99d, 100.0d, 100.0d, 3.999d, 94.490126095354675d)]
+        [TestCase(OptionRight.Call, 0.5d, 0.97d, 100.0d, 100.0d, 0.0000003d, 0.0000082089584406198386d)]
+        public void FallbackImpliedVolatilityRepricesIndependentBlackPremium(OptionRight optionRight, double maturity,
+            double discount, double forward, double strike, double annualVolatility, double premium)
+        {
+            // Premiums were computed with the Black formula and an independent arbitrary-precision normal CDF.
+            var payoff = new PlainVanillaPayoff(optionRight == OptionRight.Call ? QLNet.Option.Type.Call : QLNet.Option.Type.Put, strike);
+            var model = new TestOptionPriceModel();
+            foreach (var guess in new[] { 1e-8d, 0.4d, 8d })
+            {
+                var volatility = model.TestImpliedVolEstimator(premium, guess, maturity, discount, forward, payoff, out var black);
+                Assert.That(volatility, Is.EqualTo(annualVolatility).Within(1e-8d));
+                Assert.That(black, Is.Not.Null);
+                Assert.That(black.value(), Is.EqualTo(premium).Within(1e-9d));
+            }
+        }
+
+        [TestCase(OptionRight.Call, 110d, 100d, 9d, 1d, 1d)]   // below intrinsic
+        [TestCase(OptionRight.Call, 110d, 100d, 10d, 1d, 1d)]  // intrinsic has no strictly positive root
+        [TestCase(OptionRight.Call, 100d, 100d, 101d, 1d, 1d)] // above undiscounted forward bound
+        [TestCase(OptionRight.Put, 80d, 100d, 18d, 1d, 0.95d)] // below discounted intrinsic
+        [TestCase(OptionRight.Put, 100d, 100d, 99d, 1d, 0.95d)] // above discounted strike
+        [TestCase(OptionRight.Call, 100d, 100d, 60d, 0.02d, 1d)] // no root below the volatility cap
+        [TestCase(OptionRight.Call, 100d, 100d, 1d, 0d, 1d)]   // no implied volatility at zero time
+        public void FallbackImpliedVolatilityRejectsPremiumWithoutRoot(OptionRight optionRight, double forward,
+            double strike, double premium, double maturity, double discount)
+        {
+            var payoff = new PlainVanillaPayoff(optionRight == OptionRight.Call ? QLNet.Option.Type.Call : QLNet.Option.Type.Put, strike);
+            var model = new TestOptionPriceModel();
+            var volatility = model.TestImpliedVolEstimator(premium, 0.4d, maturity, discount, forward, payoff, out var black);
+            Assert.That(volatility, Is.Zero);
+            Assert.That(black, Is.Null);
+        }
+
+
+        [Test]
+        public void FallbackGreekApproximationUsesNonUnitMaturity()
+        {
+            const decimal spot = 100m;
+            var tz = TimeZones.NewYork;
+            var evaluationDate = new DateTime(2024, 1, 2);
+            var expiry = new DateTime(2024, 4, 2);
+            var underlyingSymbol = Symbols.SPY;
+            var optionSymbol = GetOptionSymbol(underlyingSymbol, OptionStyle.European, OptionRight.Call, spot, expiry);
+            var equity = GetEquity(underlyingSymbol, spot, 0.25m, tz);
+            var option = GetOption(optionSymbol, equity, tz);
+            var contract = GetOptionContract(optionSymbol, underlyingSymbol, evaluationDate);
+            option.SetMarketPrice(new Tick { Value = 12m });
+
+            // This finite-difference engine does not provide vega; use zero rates and dividends to make F=S=K.
+            var model = new QLOptionPriceModel(process => new FDEuropeanEngine(process, 100, 99),
+                riskFreeRateEstimator: new ConstantQLRiskFreeRateEstimator(0m),
+                dividendYieldEstimator: new ConstantQLDividendYieldEstimator(0d));
+            model.EnableGreekApproximation = false;
+            Assert.That(model.Evaluate(option, null, contract).Greeks.Vega, Is.Zero);
+
+            model.EnableGreekApproximation = true;
+            var result = model.Evaluate(option, null, contract);
+            Assert.That(result.ImpliedVolatility, Is.GreaterThan(0m));
+            var maturity = (expiry.AddDays(Option.DefaultSettlementDays) - evaluationDate).TotalDays / 365d;
+            var d1 = 0.5d * (double)result.ImpliedVolatility * Math.Sqrt(maturity);
+            var expectedVega = (double)spot * Math.Sqrt(maturity) * Math.Exp(-0.5d * d1 * d1) / Math.Sqrt(2d * Math.PI) / 100d;
+            Assert.That((double)result.Greeks.Vega, Is.EqualTo(expectedVega).Within(1e-9d));
+        }
+
         [Test]
         public void PriceModelEvaluateSpeedTest()
         {
